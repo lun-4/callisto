@@ -39,5 +39,5 @@ def cli():
     # recursively walk down the json's keys and values to extract structure
 
     schema = deduce_structure(json_data)
-    pprint.pprint(schema)
+    pprint.pprint(schema, stream=sys.stderr)
     print(json.dumps(schema))
