@@ -169,10 +169,12 @@ UNWANTED_KEYS = (
     "avatar",
     "email",
     "bio",
+    "created_at",
     "session_id",
     "icon",
     "country_code",
     "analytics_token",
+    "state",
 )
 
 
