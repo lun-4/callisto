@@ -1,3 +1,4 @@
+import copy
 import json
 import pprint
 import sys
@@ -9,12 +10,35 @@ from typing import Any
 class ValueType(Enum):
     map = auto()
     array = auto()
-    array_union = auto()  # represent multiple types of elements inside an array
-    empty_array = auto()  # represent not enough data
+    union = auto()  # represent multiple types of elements inside an array
     string = auto()
     integer = auto()
+    integer_range = auto()
+
+    # have no schema inside
+    empty_array = auto()  # represent not enough data
     snowflake = auto()
+    boolean = auto()
     redacted = auto()
+    null = auto()
+
+
+@dataclass
+class IntegerRange:
+    min: int
+    max: int
+
+    def as_json(self):
+        return {"min": self.min, "max": self.max}
+
+
+NO_SCHEMA = (
+    ValueType.snowflake,
+    ValueType.redacted,
+    ValueType.null,
+    ValueType.empty_array,
+    ValueType.boolean,
+)
 
 
 @dataclass
@@ -23,9 +47,52 @@ class Schema:
     value: Any = None
 
     def merge(self, other):
-        if self.type == ValueType.snowflake:
-            return False
+        assert isinstance(other, Schema)
+
+        # snowflakes can't be merged with anything
+        if self.type in NO_SCHEMA and self.type == other.type:
+            return True
+
+        # integer + integer = integer_range
+        # integer_range + integer = integer_range
+        if (
+            self.type in (ValueType.integer, ValueType.integer_range)
+            and other.type == ValueType.integer
+        ):
+
+            # if we had integer, create a new integer_range
+            # if we had integer_range, update the range with the new integer
+            if self.type == ValueType.integer:
+                self.type = ValueType.integer_range
+                self.value = IntegerRange(
+                    min=min(self.value, other.value), max=max(self.value, other.value)
+                )
+            if self.type == ValueType.integer_range:
+                self.value.min = min(self.value.min, other.value)
+                self.value.max = max(self.value.max, other.value)
+            return True
+
+        # if a map gets a map, we need to recurse merge() on each k,v pair
+        if self.type == ValueType.map and other.type == ValueType.map:
+            merged = True
+
+            copyself = copy.deepcopy(self)
+            for key in other.value:
+                if key in copyself.value:
+                    merged = merged and copyself.value[key].merge(other.value[key])
+                else:
+                    copyself.value[key] = other.value[key]
+                    merged = merged and True
+
+            # if it worked with the copy, then use the copy for us
+            if merged:
+                self.value = copyself.value
+            return merged
+
         return False
+
+    def __repr__(self):
+        return f"<{self.type.name} {self.value!r}>"
 
     def as_json(self):
         if self.type == ValueType.map:
@@ -33,12 +100,17 @@ class Schema:
                 "type": self.type.name,
                 "schema": {k: v.as_json() for k, v in self.value.items()},
             }
-        return {
-            "type": self.type.name,
-            "schema": self.value.as_json()
-            if isinstance(self.value, Schema)
-            else self.value,
-        }
+        elif self.type == ValueType.union:
+            return {
+                "type": self.type.name,
+                "schema": [v.as_json() for v in self.value],
+            }
+        else:
+            if isinstance(self.value, (Schema, IntegerRange)):
+                return {"type": self.type.name, "schema": self.value.as_json()}
+            if not self.value:
+                return {"type": self.type.name}
+            return {"type": self.type.name, "schema": self.value}
 
 
 def deduce_structure_old(json_data):
@@ -105,6 +177,9 @@ UNWANTED_KEYS = (
 
 
 def deduce_structure(json_data) -> Schema:
+    if json_data is None:
+        return Schema(ValueType.null)
+
     if isinstance(json_data, dict):
         schema = {}
         for key, value in json_data.items():
@@ -116,29 +191,27 @@ def deduce_structure(json_data) -> Schema:
         return Schema(ValueType.map, schema)
     elif isinstance(json_data, list):
         schema = []
+        if not json_data:
+            return Schema(ValueType.empty_array)
+
         for element in json_data:
-            print(element)
             element_schema = deduce_structure(element)
             merged = False
             for single_schema in schema:
-                if single_schema.merge(schema):
+                if single_schema.merge(element_schema):
                     merged = True
                     break
 
             # if none of the given schemas merged correctly, we have a new
             # type inside this array
             if not merged:
-                print(element_schema)
                 schema.append(element_schema)
-        else:
-            return Schema(ValueType.empty_array)
 
-        print(schema)
         assert schema
         if len(schema) == 1:  # single type in list
             return Schema(ValueType.array, schema[0])
         else:
-            return Schema(ValueType.array_union, schema)
+            return Schema(ValueType.array, Schema(ValueType.union, schema))
 
     elif isinstance(json_data, str):
         try:
@@ -148,6 +221,8 @@ def deduce_structure(json_data) -> Schema:
         except ValueError:
             pass
         return Schema(ValueType.string, json_data)
+    elif isinstance(json_data, bool):
+        return Schema(ValueType.boolean)
     elif isinstance(json_data, int):
         return Schema(ValueType.integer, json_data)
     else:
@@ -169,9 +244,48 @@ def cli():
 
 
 def test_simple_inference():
-    assert deduce_structure(2) == 2
-    assert deduce_structure("abc") == "abc"
+    assert deduce_structure(2).type == ValueType.integer
 
 
-def test_object_inference():
-    assert deduce_structure({"a": 2}) == {"a": 2}
+def test_list_inference():
+    schema = deduce_structure({"a": [1, 2, 3, 4, 5]})
+    assert schema.type == ValueType.map
+    assert schema.value["a"].type == ValueType.array
+    assert schema.value["a"].value.type == ValueType.integer_range
+
+
+def test_applications_list():
+    schema = deduce_structure(
+        [
+            {
+                "name": "test1",
+                "id": "99999999999999999",
+                "icon": "sfskgjlrg",
+                "command_count": 1,
+                "bot": {
+                    "username": "test1",
+                    "public_flags": 0,
+                    "id": "99999999999999999999",
+                    "discriminator": "6666",
+                    "bot": True,
+                    "avatar": "otiuolrgkjsdflgkj",
+                },
+            },
+            {
+                "name": "test2",
+                "id": "3591868261857193847",
+                "icon": "alkdfjsldkgjlkgj",
+                "command_count": 1,
+                "bot": {
+                    "username": "test2",
+                    "public_flags": 65536,
+                    "id": "38571938471938561",
+                    "discriminator": "1321",
+                    "bot": True,
+                    "avatar": "ghjklrkgj",
+                },
+            },
+        ]
+    )
+    assert schema.type == ValueType.array
+    assert schema.value.type == ValueType.map
