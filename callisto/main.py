@@ -79,7 +79,6 @@ class Schema:
 
         # if a map gets a map, we need to recurse merge() on each k,v pair
         if self.type == ValueType.map and other.type == ValueType.map:
-
             merged = True
             for key in other.value:
                 if key in self.value:
@@ -91,6 +90,16 @@ class Schema:
                         self.value[key] = other.value[key]
 
             return merged
+
+        # if an array gets an array, attempt to merge with each element
+        # if any of them works, that's where mutate happens
+        if self.type == ValueType.array and other.type == ValueType.array:
+            assert other.value.type != ValueType.union  # TODO support union
+            if self.value.merge(other.value, mutate=False):
+                self.value.merge(other.value, mutate=True)
+                return True
+            else:
+                return False
 
         return False
 
@@ -242,6 +251,29 @@ def test_applications_list():
                     "bot": True,
                     "avatar": "ghjklrkgj",
                 },
+            },
+        ]
+    )
+    assert schema.type == ValueType.array
+    assert schema.value.type == ValueType.map
+
+
+def test_guild_folder():
+    schema = deduce_structure(
+        [
+            {
+                "guild_ids": [
+                    "99999999999999999999",
+                    "99999999999999999999",
+                    "99999999999999999999",
+                ],
+            },
+            {
+                "guild_ids": [
+                    "99999999999999999999",
+                    "99999999999999999999",
+                    "99999999999999999999",
+                ],
             },
         ]
     )
