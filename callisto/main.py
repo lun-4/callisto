@@ -1,4 +1,3 @@
-import copy
 import json
 import pprint
 import sys
@@ -46,11 +45,17 @@ class Schema:
     type: ValueType
     value: Any = None
 
-    def merge(self, other):
+    def merge(self, other, *, mutate=False):
         assert isinstance(other, Schema)
 
-        # snowflakes can't be merged with anything
+        # if theyre of same type but no schema, they already merged lol
         if self.type in NO_SCHEMA and self.type == other.type:
+            return True
+
+        # strings become string_range
+        if self.type == ValueType.string and other.type == ValueType.string:
+            if mutate:
+                self.value.extend(other.value)
             return True
 
         # integer + integer = integer_range
@@ -62,31 +67,29 @@ class Schema:
 
             # if we had integer, create a new integer_range
             # if we had integer_range, update the range with the new integer
-            if self.type == ValueType.integer:
+            if mutate and self.type == ValueType.integer:
                 self.type = ValueType.integer_range
                 self.value = IntegerRange(
                     min=min(self.value, other.value), max=max(self.value, other.value)
                 )
-            if self.type == ValueType.integer_range:
+            if mutate and self.type == ValueType.integer_range:
                 self.value.min = min(self.value.min, other.value)
                 self.value.max = max(self.value.max, other.value)
             return True
 
         # if a map gets a map, we need to recurse merge() on each k,v pair
         if self.type == ValueType.map and other.type == ValueType.map:
+
             merged = True
-
-            copyself = copy.deepcopy(self)
             for key in other.value:
-                if key in copyself.value:
-                    merged = merged and copyself.value[key].merge(other.value[key])
+                if key in self.value:
+                    merged = merged and self.value[key].merge(
+                        other.value[key], mutate=mutate
+                    )
                 else:
-                    copyself.value[key] = other.value[key]
-                    merged = merged and True
+                    if mutate:
+                        self.value[key] = other.value[key]
 
-            # if it worked with the copy, then use the copy for us
-            if merged:
-                self.value = copyself.value
             return merged
 
         return False
@@ -152,8 +155,9 @@ def deduce_structure(json_data) -> Schema:
             element_schema = deduce_structure(element)
             merged = False
             for single_schema in schema:
-                if single_schema.merge(element_schema):
+                if single_schema.merge(element_schema, mutate=False):
                     merged = True
+                    single_schema.merge(element_schema, mutate=True)
                     break
 
             # if none of the given schemas merged correctly, we have a new
@@ -174,7 +178,7 @@ def deduce_structure(json_data) -> Schema:
                 return Schema(ValueType.snowflake)
         except ValueError:
             pass
-        return Schema(ValueType.string, json_data)
+        return Schema(ValueType.string, [json_data])
     elif isinstance(json_data, bool):
         return Schema(ValueType.boolean)
     elif isinstance(json_data, int):
@@ -243,3 +247,7 @@ def test_applications_list():
     )
     assert schema.type == ValueType.array
     assert schema.value.type == ValueType.map
+
+
+if __name__ == "__main__":
+    cli()
