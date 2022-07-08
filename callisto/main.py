@@ -144,6 +144,7 @@ UNWANTED_KEYS = (
     "country_code",
     "analytics_token",
     "state",
+    "joined_at",
 )
 
 
