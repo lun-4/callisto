@@ -1,3 +1,4 @@
+import copy
 import json
 import pprint
 import sys
@@ -93,7 +94,11 @@ class Schema:
 
         # if an array gets an array, attempt to merge with each element
         # if any of them works, that's where mutate happens
-        if self.type == ValueType.array and other.type == ValueType.array:
+        if (
+            self.type == ValueType.array
+            and other.type == ValueType.array
+            and other.value.type != ValueType.union
+        ):
             assert other.value.type != ValueType.union  # TODO support union
             if self.value.merge(other.value, mutate=False):
                 self.value.merge(other.value, mutate=True)
@@ -101,10 +106,61 @@ class Schema:
             else:
                 return False
 
+        # T + null = Union[T, null]
+        #
+        # T must not be Union (this is handled by another type rule)
+        if (
+            self.type == ValueType.null or other.type == ValueType.null
+        ) and self.type != ValueType.union:
+            non_null_schema = self if self.type != ValueType.null else other
+            if non_null_schema.type == ValueType.null:
+                raise AssertionError(f"expected non-null, got {non_null_schema.type}")
+            if mutate:
+                assert isinstance(non_null_schema, Schema)
+                nonnull_copy = copy.deepcopy(non_null_schema)
+                # only turn us into Union[T, null] post-copy lol
+                self.value = [Schema(ValueType.null), nonnull_copy]
+                self.type = ValueType.union
+            return True
+
+        # Union[...] + Union[...] always merges
+        # (merging inner types is the optimistic approach)
+        if self.type == ValueType.union and other.type == ValueType.union:
+            for child_self_type in self.value:
+                for child_other_type in other.value:
+                    merged_this_type = child_self_type.merge(
+                        child_other_type, mutate=False
+                    )
+
+                    if mutate and merged_this_type:
+                        child_self_type.merge(child_other_type, mutate=True)
+
+                    if mutate and not merged_this_type:
+                        self.value.append(child_other_type)
+
+            return True
+
+        # Union[...] + T
+        #  (T must not be union)
+        #  - if T can merge with any of the child types, do it
+        #  - if not, spit Union[..., T]
+        if self.type == ValueType.union and other.type != ValueType.union:
+            found = True
+            for child_type in self.value:
+                if child_type.merge(other, mutate=False):
+                    if mutate:
+                        child_type.merge(other, mutate=True)
+                    found = True
+
+            if mutate and not found:
+                self.value.append(other)
+
+            return True
+
         return False
 
-    def __repr__(self):
-        return f"<{self.type.name} {self.value!r}>"
+    # def __repr__(self):
+    #    return f"<{self.type.name} {self.value!r}>"
 
     def as_json(self):
         if self.type == ValueType.map:
@@ -286,6 +342,35 @@ def test_guild_folder():
     )
     assert schema.type == ValueType.array
     assert schema.value.type == ValueType.map
+
+
+def test_optionals():
+    schema = deduce_structure(
+        [
+            {
+                "list": [
+                    "99999999999999999999",
+                    "99999999999999999999",
+                ],
+            },
+            {
+                "list": None,
+            },
+            {
+                "list": None,
+            },
+            {
+                "list": None,
+            },
+            {
+                "list": ["666668517398492873"],
+            },
+        ]
+    )
+    assert schema.type == ValueType.array
+    assert schema.value.type == ValueType.map
+    assert schema.value.value["list"].type == ValueType.union
+    assert len(schema.value.value["list"].value) == 2
 
 
 if __name__ == "__main__":
