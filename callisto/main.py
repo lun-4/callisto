@@ -12,7 +12,6 @@ class ValueType(Enum):
     array = auto()
     union = auto()  # represent multiple types of elements inside an array
     string = auto()
-    integer = auto()
     integer_range = auto()
 
     # have no schema inside
@@ -59,23 +58,13 @@ class Schema:
                 self.value = self.value.union(other.value)
             return True
 
-        # integer + integer = integer_range
-        # integer_range + integer = integer_range
         if (
-            self.type in (ValueType.integer, ValueType.integer_range)
-            and other.type == ValueType.integer
+            self.type == ValueType.integer_range
+            and other.type == ValueType.integer_range
         ):
-
-            # if we had integer, create a new integer_range
-            # if we had integer_range, update the range with the new integer
-            if mutate and self.type == ValueType.integer:
-                self.type = ValueType.integer_range
-                self.value = IntegerRange(
-                    min=min(self.value, other.value), max=max(self.value, other.value)
-                )
-            if mutate and self.type == ValueType.integer_range:
-                self.value.min = min(self.value.min, other.value)
-                self.value.max = max(self.value.max, other.value)
+            if mutate:
+                self.value.min = min(self.value.min, other.value.min)
+                self.value.max = max(self.value.max, other.value.max)
             return True
 
         # if a map gets a map, we need to recurse merge() on each k,v pair
@@ -174,6 +163,7 @@ class Schema:
                 "schema": [v for v in self.value],
             }
         elif self.type == ValueType.union:
+            assert isinstance(self.value, list)
             return {
                 "type": self.type.name,
                 "schema": [v.as_json() for v in self.value],
@@ -254,7 +244,7 @@ def deduce_structure(json_data) -> Schema:
     elif isinstance(json_data, bool):
         return Schema(ValueType.boolean)
     elif isinstance(json_data, int):
-        return Schema(ValueType.integer, json_data)
+        return Schema(ValueType.integer_range, IntegerRange(json_data, json_data))
     else:
         raise AssertionError(f"todo support {type(json_data)}")
 
@@ -274,7 +264,7 @@ def cli():
 
 
 def test_simple_inference():
-    assert deduce_structure(2).type == ValueType.integer
+    assert deduce_structure(2).type == ValueType.integer_range
 
 
 def test_list_inference():
