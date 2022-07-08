@@ -55,7 +55,7 @@ class Schema:
         # strings become string_range
         if self.type == ValueType.string and other.type == ValueType.string:
             if mutate:
-                self.value.extend(other.value)
+                self.value = self.value.union(other.value)
             return True
 
         # integer + integer = integer_range
@@ -111,6 +111,11 @@ class Schema:
             return {
                 "type": self.type.name,
                 "schema": {k: v.as_json() for k, v in self.value.items()},
+            }
+        elif self.type == ValueType.string:
+            return {
+                "type": self.type.name,
+                "schema": [v for v in self.value],
             }
         elif self.type == ValueType.union:
             return {
@@ -178,6 +183,7 @@ def deduce_structure(json_data) -> Schema:
         if len(schema) == 1:  # single type in list
             return Schema(ValueType.array, schema[0])
         else:
+            assert isinstance(schema, list)
             return Schema(ValueType.array, Schema(ValueType.union, schema))
 
     elif isinstance(json_data, str):
@@ -187,7 +193,7 @@ def deduce_structure(json_data) -> Schema:
                 return Schema(ValueType.snowflake)
         except ValueError:
             pass
-        return Schema(ValueType.string, [json_data])
+        return Schema(ValueType.string, set([json_data]))
     elif isinstance(json_data, bool):
         return Schema(ValueType.boolean)
     elif isinstance(json_data, int):
@@ -204,8 +210,8 @@ def cli():
     # recursively walk down the json's keys and values to extract structure
 
     schema = deduce_structure(json_data)
-    schema_json = schema.as_json()
     pprint.pprint(schema, stream=sys.stderr)
+    schema_json = schema.as_json()
     pprint.pprint(schema_json, stream=sys.stderr)
     print(json.dumps(schema_json))
 
